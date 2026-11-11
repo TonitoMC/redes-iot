@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estación Meteorológica</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --muted:#6a737d; --grid:#e3e6ea; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171a; --card:#1d2125; --fg:#e6e8ea; --muted:#8b949e; --grid:#2d333a; }
+  }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px system-ui,sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin-bottom:16px; }
+  .stats { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+  .stat { background:var(--card); border-radius:8px; padding:10px 16px; min-width:120px; }
+  .stat b { display:block; font-size:24px; }
+  .stat span { color:var(--muted); font-size:13px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:12px; }
+  .card { background:var(--card); border-radius:8px; padding:12px; }
+  .card h2 { font-size:14px; margin:0 0 8px; color:var(--muted); font-weight:600; }
+  canvas { max-height:280px; }
+</style>
+</head>
+<body>
+<h1>Estación Meteorológica</h1>
+<div class="sub" id="sub">Esperando datos…</div>
+<div class="stats">
+  <div class="stat"><b id="sTemp">–</b><span>Temperatura</span></div>
+  <div class="stat"><b id="sHum">–</b><span>Humedad</span></div>
+  <div class="stat"><b id="sWind">–</b><span>Viento</span></div>
+  <div class="stat"><b id="sN">0</b><span>Lecturas</span></div>
+</div>
+<div class="grid">
+  <div class="card"><h2>Temperatura (°C)</h2><canvas id="cTemp"></canvas></div>
+  <div class="card"><h2>Humedad relativa (%)</h2><canvas id="cHum"></canvas></div>
+  <div class="card"><h2>Dirección del viento (frecuencia)</h2><canvas id="cWind"></canvas></div>
+</div>
+<script>
+const DIRS = ["N","NO","O","SO","S","SE","E","NE"];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+Chart.defaults.color = css('--muted');
+Chart.defaults.borderColor = css('--grid');
+Chart.defaults.animation = false;
+
+const line = (id, color, min, max) => new Chart(document.getElementById(id), {
+  type: 'line',
+  data: { labels: [], datasets: [{ data: [], borderColor: color, backgroundColor: color, tension: .25, pointRadius: 3 }] },
+  options: { plugins: { legend: { display: false } }, scales: { y: { min, max } } }
+});
+const cTemp = line('cTemp', '#d9534f', 0, 110);
+const cHum  = line('cHum',  '#2a7de1', 0, 100);
+const cWind = new Chart(document.getElementById('cWind'), {
+  type: 'bar',
+  data: { labels: DIRS, datasets: [{ data: DIRS.map(() => 0), backgroundColor: '#3b9c6e' }] },
+  options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
+});
+
+async function refresh() {
+  try {
+    const pts = await (await fetch('/api/data')).json();
+    const labels = pts.map(p => p.t);
+    cTemp.data.labels = labels; cTemp.data.datasets[0].data = pts.map(p => p.temperatura); cTemp.update();
+    cHum.data.labels  = labels; cHum.data.datasets[0].data  = pts.map(p => p.humedad);     cHum.update();
+    cWind.data.datasets[0].data = DIRS.map(d => pts.filter(p => p.direccion_viento === d).length); cWind.update();
+    if (pts.length) {
+      const l = pts[pts.length - 1];
+      sTemp.textContent = l.temperatura.toFixed(2) + ' °C';
+      sHum.textContent = l.humedad + ' %';
+      sWind.textContent = l.direccion_viento;
+      sub.textContent = 'Última lectura: ' + l.t;
+    }
+    sN.textContent = pts.length;
+  } catch (e) { sub.textContent = 'Sin conexión con el consumer…'; }
+}
+refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>
