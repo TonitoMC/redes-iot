@@ -1,0 +1,5 @@
+*.pdf
+/producer
+/consumer
+*.exe
+.claude/
