@@ -69,12 +69,33 @@ Ambos programas usan por defecto el topic `201105` y el broker del laboratorio, 
 | `-min`, `-max` | producer | Intervalo mínimo y máximo entre envíos (s) | `15`, `30` |
 | `-http` | consumer | Dirección del dashboard | `:8080` |
 | `-group` | consumer | Consumer group id | uno nuevo por ejecución |
+| `-out` | consumer | Archivo CSV donde se respaldan las lecturas (vacío para desactivar) | `lecturas.csv` |
+| `-compact` | ambos | Usar el payload de 3 bytes en lugar de JSON (ver abajo) | desactivado |
 
 Ejemplo para probar rápido, enviando cada 2 a 3 segundos:
 
 ```bash
 go run ./cmd/producer -min 2 -max 3
 ```
+
+## Payload restringido de 3 bytes
+
+Para redes como LoRa o Sigfox el payload máximo es de 3 bytes (24 bits), así que con `-compact` cada lectura se codifica en binario en lugar de JSON. El producer y el consumer deben usar la misma opción, y conviene usar un topic distinto al del JSON para no mezclar formatos:
+
+```bash
+go run ./cmd/producer -compact -topic 201105-p2
+go run ./cmd/consumer -compact -topic 201105-p2
+```
+
+Distribución de los 24 bits:
+
+| Bits | Campo | Codificación |
+|---|---|---|
+| 23..10 (14 bits) | Temperatura | Entero en centésimas de grado (0 a 11000). Como 2^14 = 16384 > 11000, caben los 2 decimales sin pérdida. |
+| 9..3 (7 bits) | Humedad | Entero de 0 a 100 (2^7 = 128) |
+| 2..0 (3 bits) | Dirección del viento | Índice 0 a 7 en `N, NO, O, SO, S, SE, E, NE` |
+
+Por ejemplo, `{"temperatura":56.32,"humedad":51,"direccion_viento":"SO"}` (58 bytes en JSON) se envía como 3 bytes. El dashboard y el CSV funcionan igual en ambos modos. La codificación está en `internal/codec` y tiene tests (`go test ./internal/codec/`).
 
 ## Estructura
 
@@ -83,6 +104,7 @@ cmd/producer/       # Kafka Producer: envía una lectura cada 15-30 s
 cmd/consumer/       # Kafka Consumer + servidor HTTP con gráficas en vivo
   dashboard.html    # Página del dashboard (Chart.js)
 internal/sensor/    # Generación pseudoaleatoria de datos
+internal/codec/     # Encode/Decode del payload de 3 bytes
 internal/kafkacfg/  # Broker y autenticación SASL
 ```
 
