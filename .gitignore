@@ -1,4 +1,5 @@
 *.pdf
+!docs/presentacion.pdf
 /producer
 /consumer
 *.exe
