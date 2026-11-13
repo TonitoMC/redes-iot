@@ -26,6 +26,7 @@ import (
 
 	"github.com/segmentio/kafka-go"
 
+	"meteo/internal/codec"
 	"meteo/internal/kafkacfg"
 	"meteo/internal/sensor"
 )
@@ -36,6 +37,7 @@ func main() {
 	topic := flag.String("topic", "201105", "topic (carné de un integrante)")
 	minS := flag.Float64("min", 15, "intervalo mínimo entre envíos (s)")
 	maxS := flag.Float64("max", 30, "intervalo máximo entre envíos (s)")
+	compact := flag.Bool("compact", false, "enviar el payload codificado en 3 bytes en lugar de JSON")
 	flag.Parse()
 	if *topic == "" {
 		log.Fatal("el topic no puede estar vacío")
@@ -56,7 +58,16 @@ func main() {
 
 	log.Printf("producer -> %s topic=%s", *broker, *topic)
 	for {
-		payload, _ := json.Marshal(sensor.Generate())
+		reading := sensor.Generate()
+		var payload []byte
+		if *compact {
+			var err error
+			if payload, err = codec.Encode(reading); err != nil {
+				log.Fatalf("error codificando: %v", err)
+			}
+		} else {
+			payload, _ = json.Marshal(reading)
+		}
 
 		err := w.WriteMessages(ctx, kafka.Message{Key: []byte("sensor1"), Value: payload})
 		if ctx.Err() != nil {
@@ -66,7 +77,11 @@ func main() {
 		if err != nil {
 			log.Printf("error enviando: %v", err)
 		} else {
-			log.Printf("enviado %s", payload)
+			if *compact {
+				log.Printf("enviado %x (%d bytes) <- %+v", payload, len(payload), reading)
+			} else {
+				log.Printf("enviado %s", payload)
+			}
 		}
 
 		// Esperar un intervalo aleatorio entre min y max segundos
