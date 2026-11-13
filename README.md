@@ -71,6 +71,8 @@ Ambos programas usan por defecto el topic `201105` y el broker del laboratorio, 
 | `-group` | consumer | Consumer group id | uno nuevo por ejecución |
 | `-out` | consumer | Archivo CSV donde se respaldan las lecturas (vacío para desactivar) | `lecturas.csv` |
 | `-compact` | ambos | Usar el payload de 3 bytes en lugar de JSON (ver abajo) | desactivado |
+| `-replay` | consumer | CSV de lecturas a repetir sin conectarse al broker (ver abajo) | vacío |
+| `-replay-delay` | consumer | Pausa entre lecturas del replay | `300ms` |
 
 Ejemplo para probar rápido, enviando cada 2 a 3 segundos:
 
@@ -95,7 +97,17 @@ Distribución de los 24 bits:
 | 9..3 (7 bits) | Humedad | Entero de 0 a 100 (2^7 = 128) |
 | 2..0 (3 bits) | Dirección del viento | Índice 0 a 7 en `N, NO, O, SO, S, SE, E, NE` |
 
-Por ejemplo, `{"temperatura":56.32,"humedad":51,"direccion_viento":"SO"}` (58 bytes en JSON) se envía como 3 bytes. El dashboard y el CSV funcionan igual en ambos modos. La codificación está en `internal/codec` y tiene tests (`go test ./internal/codec/`).
+Por ejemplo, `{"temperatura":56.32,"humedad":51,"direccion_viento":"SO"}` (58 bytes en JSON) se envía como 3 bytes. El dashboard y el CSV funcionan igual en ambos modos.
+
+### Probar el codec sin broker
+
+El broker del laboratorio solo estuvo encendido el primer día de la actividad. Para demostrar el codec sin conexión, `-replay` toma las lecturas guardadas en `lecturas.csv`, codifica cada una a 3 bytes, la decodifica de vuelta y la grafica en el dashboard:
+
+```bash
+go run ./cmd/consumer -replay lecturas.csv
+```
+
+Cada lectura se imprime como `lectura -> bytes en hex -> lectura decodificada`, y al final se informa cuántas quedaron idénticas tras el viaje de ida y vuelta. Con las 414 lecturas de `lecturas.csv`, todas quedaron iguales. Esto prueba la codificación, pero no el envío por Kafka: el modo `-replay` no usa el broker. La codificación está en `internal/codec` y tiene tests (`go test ./internal/codec/`).
 
 ## Estructura
 

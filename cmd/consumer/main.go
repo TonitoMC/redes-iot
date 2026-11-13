@@ -21,7 +21,10 @@
 //
 // Uso:
 //
-//	go run ./cmd/consumer [-topic 201105] [-broker host:9092] [-http :8080] [-group id] [-out lecturas.csv]
+//	go run ./cmd/consumer [-topic 201105] [-broker host:9092] [-http :8080] [-group id] [-out lecturas.csv] [-compact]
+//
+// Sin acceso al broker, -replay lecturas.csv repite las lecturas guardadas
+// pasándolas por el codec de 3 bytes y las grafica igual.
 //
 // Abrir http://localhost:8080 en el navegador.
 package main
@@ -74,6 +77,8 @@ func main() {
 	addr := flag.String("http", ":8080", "dirección del dashboard")
 	out := flag.String("out", "lecturas.csv", "archivo CSV donde se guardan las lecturas (vacío para desactivar)")
 	compact := flag.Bool("compact", false, "decodificar el payload de 3 bytes en lugar de JSON")
+	replay := flag.String("replay", "", "CSV de lecturas a repetir sin conectarse al broker (codifica y decodifica en 3 bytes)")
+	delay := flag.Duration("replay-delay", 300*time.Millisecond, "pausa entre lecturas del replay")
 	flag.Parse()
 	if *topic == "" {
 		log.Fatal("el topic no puede estar vacío")
@@ -83,31 +88,38 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// Leer desde el primer mensaje para incluir el historial
-	r := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     []string{*broker},
-		Topic:       *topic,
-		GroupID:     *group,
-		StartOffset: kafka.FirstOffset,
-		Dialer:      kafkacfg.Dialer(),
-	})
-	defer r.Close()
+	source := fmt.Sprintf("%s topic=%s", *broker, *topic)
+	if *replay != "" {
+		// Sin broker: se repiten las lecturas del CSV pasándolas por el codec
+		source = "replay de " + *replay
+		go replayCSV(ctx, *replay, *delay)
+	} else {
+		// Leer desde el primer mensaje para incluir el historial
+		r := kafka.NewReader(kafka.ReaderConfig{
+			Brokers:     []string{*broker},
+			Topic:       *topic,
+			GroupID:     *group,
+			StartOffset: kafka.FirstOffset,
+			Dialer:      kafkacfg.Dialer(),
+		})
+		defer r.Close()
 
-	// Abrir el CSV de respaldo (se reescribe en cada ejecución)
-	var w *csv.Writer
-	if *out != "" {
-		f, err := os.Create(*out)
-		if err != nil {
-			log.Fatalf("no se pudo crear %s: %v", *out, err)
+		// Abrir el CSV de respaldo (se reescribe en cada ejecución)
+		var w *csv.Writer
+		if *out != "" {
+			f, err := os.Create(*out)
+			if err != nil {
+				log.Fatalf("no se pudo crear %s: %v", *out, err)
+			}
+			defer f.Close()
+			w = csv.NewWriter(f)
+			w.Write([]string{"timestamp", "particion", "offset", "temperatura", "humedad", "direccion_viento"})
+			w.Flush()
+			log.Printf("guardando lecturas en %s", *out)
 		}
-		defer f.Close()
-		w = csv.NewWriter(f)
-		w.Write([]string{"timestamp", "particion", "offset", "temperatura", "humedad", "direccion_viento"})
-		w.Flush()
-		log.Printf("guardando lecturas en %s", *out)
-	}
 
-	go consume(ctx, r, w, *compact)
+		go consume(ctx, r, w, *compact)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", serveDashboard)
@@ -120,10 +132,75 @@ func main() {
 		srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("consumer <- %s topic=%s | dashboard en http://localhost%s", *broker, *topic, *addr)
+	log.Printf("consumer <- %s | dashboard en http://localhost%s", source, *addr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+// ReplayCSV repite sin broker las lecturas de un CSV generado por -out. Cada
+// lectura se codifica a 3 bytes y se decodifica de vuelta, como ocurriría
+// entre el producer y el consumer con -compact, y se agrega a points. Al
+// final informa si alguna lectura cambió en el viaje de ida y vuelta.
+func replayCSV(ctx context.Context, path string, delay time.Duration) {
+	f, err := os.Open(path)
+	if err != nil {
+		log.Fatalf("no se pudo abrir %s: %v", path, err)
+	}
+	defer f.Close()
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		log.Fatalf("CSV inválido: %v", err)
+	}
+	if len(rows) < 2 {
+		log.Fatalf("%s no tiene lecturas", path)
+	}
+
+	ok, bad := 0, 0
+	for _, row := range rows[1:] { // La primera fila es el encabezado
+		if len(row) < 6 {
+			continue
+		}
+		t, err1 := time.Parse(time.RFC3339, row[0])
+		temp, err2 := strconv.ParseFloat(row[3], 64)
+		hum, err3 := strconv.Atoi(row[4])
+		if err1 != nil || err2 != nil || err3 != nil {
+			log.Printf("fila inválida %v", row)
+			continue
+		}
+
+		in := sensor.Reading{Temperatura: temp, Humedad: hum, DireccionViento: row[5]}
+		payload, err := codec.Encode(in)
+		if err != nil {
+			log.Printf("no se pudo codificar %+v: %v", in, err)
+			bad++
+			continue
+		}
+		out, err := codec.Decode(payload)
+		if err != nil || out != in {
+			log.Printf("ida y vuelta distinta: %+v -> %x -> %+v (%v)", in, payload, out, err)
+			bad++
+			continue
+		}
+		ok++
+		log.Printf("%+v -> %x (%d bytes) -> %+v", in, payload, len(payload), out)
+
+		mu.Lock()
+		points = append(points, point{
+			Time:            t.Local().Format("15:04:05"),
+			Temperatura:     out.Temperatura,
+			Humedad:         out.Humedad,
+			DireccionViento: out.DireccionViento,
+		})
+		mu.Unlock()
+
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return
+		}
+	}
+	log.Printf("replay terminado: %d lecturas iguales tras codificar y decodificar, %d con diferencias", ok, bad)
 }
 
 // Consume lee mensajes de Kafka hasta que se cancela ctx. Cada mensaje se
